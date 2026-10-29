@@ -4,6 +4,8 @@
 
 **88emuPlayer** is the standalone application for playing MIDI files and using those devices from a MIDI keyboard, sequencer or game. **88EmuCli** uses the same emulation to render files to WAV offline, as fast as the computer can run it, or to a demo video showing the player's window as it plays.
 
+88emuPlayer is also available as a **VST3** and **VST2** plugin. In a host the plugin receives MIDI on its input (one port, part group A) and plays through the host's audio; the data folder, ROM search area and settings below are shared with the standalone. The player's own audio/MIDI device settings and the virtual MIDI ports do not apply inside a host, and the MIDI file player renders into the host's stream.
+
 ## Getting started and file locations
 
 1. Put a complete ROM set in the player's data folder, or a subfolder such as `roms/SC-88Pro`.
