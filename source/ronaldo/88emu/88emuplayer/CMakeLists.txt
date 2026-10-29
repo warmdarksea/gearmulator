@@ -59,6 +59,24 @@ set(HARDWARE_ASSETS
 	${HARDWARE_SKIN_DIR}/cm_volume_knob.png
 	${HARDWARE_SKIN_DIR}/value_knob.png
 )
+# The formats to build, from the same USE_* switches source/cmake/juce.cmake derives for the
+# synths: the Standalone is the full player application, the plugin formats put the player
+# into a host, which then owns the audio device and hands the MIDI in. VST2 needs the SDK
+# (or the FST headers findvst2.cmake falls back to), exactly as it does for the synths.
+set(playerFormats "")
+if(USE_Standalone)
+	list(APPEND playerFormats Standalone)
+endif()
+if(USE_VST3)
+	list(APPEND playerFormats VST3)
+endif()
+if(USE_VST2 AND JUCE_GLOBAL_VST2_SDK_PATH)
+	list(APPEND playerFormats VST)
+endif()
+if(NOT playerFormats)
+	return()
+endif()
+
 juce_add_binary_data(88emuplayer_BinaryData SOURCES ${HARDWARE_ASSETS})
 juce_add_plugin(88emuplayer
 	# The 512px application icon supplies both ICNS and Windows ICO sizes.
@@ -73,9 +91,10 @@ juce_add_plugin(88emuplayer
 	COPY_PLUGIN_AFTER_BUILD FALSE
 	PLUGIN_MANUFACTURER_CODE TusP
 	PLUGIN_CODE TscH
-	FORMATS Standalone
+	FORMATS ${playerFormats}
 	PRODUCT_NAME "88emuPlayer"
 	PRODUCTS_FOLDER "${TUS_BIN_DIR}/plugins/$<CONFIG>"
+	VST3_AUTO_MANIFEST ${TUS_CAN_RUN_BUILT_BINARIES}
 	BUNDLE_ID "com.theusualsuspects.SC88Hardware"
 )
 target_sources(88emuplayer PRIVATE
@@ -118,51 +137,109 @@ endif()
 if(TARGET PluginFormat_Standalone)
 	add_dependencies(PluginFormat_Standalone 88emuplayer_Standalone)
 endif()
-# The standalone player needs its own install rule and CPack component. No macOS setup script: the
-# README explains how to allow the quarantined app and CLI in System Settings.
+# Each built format gets its own install rule and CPack component, mirroring what
+# createJucePlugin() does for the synths. ${playerComponents} collects them so the license,
+# readme and changelog below ship with every one.
 set(playerProductName "88emuPlayer")
-if(APPLE)
-	install(TARGETS 88emuplayer_Standalone DESTINATION . COMPONENT ${playerProductName}-Standalone)
-elseif(MSVC)
-	install(TARGETS 88emuplayer_Standalone RUNTIME DESTINATION . COMPONENT ${playerProductName}-Standalone)
-else()
-	install(TARGETS 88emuplayer_Standalone RUNTIME DESTINATION bin/ COMPONENT ${playerProductName}-Standalone)
+set(playerComponents "")
+
+# The standalone. No macOS setup script: the README explains how to allow the quarantined
+# app and CLI in System Settings.
+if(TARGET 88emuplayer_Standalone)
+	list(APPEND playerComponents ${playerProductName}-Standalone)
+	if(APPLE)
+		install(TARGETS 88emuplayer_Standalone DESTINATION . COMPONENT ${playerProductName}-Standalone)
+	elseif(MSVC)
+		install(TARGETS 88emuplayer_Standalone RUNTIME DESTINATION . COMPONENT ${playerProductName}-Standalone)
+	else()
+		install(TARGETS 88emuplayer_Standalone RUNTIME DESTINATION bin/ COMPONENT ${playerProductName}-Standalone)
+	endif()
+endif()
+
+# The VST3: a bundle directory, installed as createJucePlugin() installs the synths'.
+if(TARGET 88emuplayer_VST3)
+	list(APPEND playerComponents ${playerProductName}-VST3)
+	add_dependencies(PluginFormat_VST3 88emuplayer_VST3)
+	if(APPLE)
+		install(TARGETS 88emuplayer_VST3 DESTINATION . COMPONENT ${playerProductName}-VST3)
+		installMacSetupScript(. ${playerProductName}-VST3)
+	else()
+		get_target_property(vst3OutputFolder 88emuplayer_VST3 ARCHIVE_OUTPUT_DIRECTORY)
+		if(UNIX)
+			set(vst3Dest lib/vst3)
+			set(vst3Pattern "*.so")
+		else()
+			set(vst3Dest .)
+			set(vst3Pattern "*.vst3")
+		endif()
+		install(DIRECTORY ${vst3OutputFolder}/${playerProductName}.vst3 DESTINATION ${vst3Dest}
+			COMPONENT ${playerProductName}-VST3 FILES_MATCHING PATTERN ${vst3Pattern} PATTERN "*.json")
+	endif()
+	addPluginTest(88emuplayer_VST3)
+endif()
+
+# The VST2, built against the FST headers unless a real SDK is present.
+if(TARGET 88emuplayer_VST)
+	list(APPEND playerComponents ${playerProductName}-VST2)
+	add_dependencies(PluginFormat_VST2 88emuplayer_VST)
+	if(UNIX AND NOT APPLE)
+		# JUCE leaves the default "lib" prefix on the Linux VST2, see createJucePlugin() (BUG-10214)
+		set_target_properties(88emuplayer_VST PROPERTIES PREFIX "")
+	endif()
+	if(MSVC OR APPLE)
+		install(TARGETS 88emuplayer_VST DESTINATION . COMPONENT ${playerProductName}-VST2)
+		if(APPLE)
+			installMacSetupScript(. ${playerProductName}-VST2)
+		endif()
+	else()
+		install(TARGETS 88emuplayer_VST LIBRARY DESTINATION lib/vst/ COMPONENT ${playerProductName}-VST2)
+	endif()
+	addPluginTest(88emuplayer_VST)
 endif()
 set_target_properties(88emuplayer PROPERTIES TUS_PRODUCT_NAME "${playerProductName}")
 tus_exportTarget(88emuplayer)
 # The generated changelog may be absent when this product has no entries.
 tus_registerChangelog(88emuplayer)
-install(FILES "${CMAKE_SOURCE_DIR}/LICENSE.md"
-	DESTINATION .
-	COMPONENT ${playerProductName}-Standalone)
-install(FILES "${CMAKE_SOURCE_DIR}/doc/88emu_readme.md"
-	DESTINATION .
-	RENAME README.md
-	COMPONENT ${playerProductName}-Standalone)
-install(FILES "${CMAKE_SOURCE_DIR}/doc/changelog_split/changelog_${playerProductName}.txt"
-	DESTINATION .
-	COMPONENT ${playerProductName}-Standalone
-	OPTIONAL)
-# Keep JUCE's wrapper, but own startup configuration before it opens devices.
-target_sources(88emuplayer_Standalone PRIVATE app/Emu88Standalone.cpp)
+foreach(playerComponent IN LISTS playerComponents)
+	install(FILES "${CMAKE_SOURCE_DIR}/LICENSE.md"
+		DESTINATION .
+		COMPONENT ${playerComponent})
+	install(FILES "${CMAKE_SOURCE_DIR}/doc/88emu_readme.md"
+		DESTINATION .
+		RENAME README.md
+		COMPONENT ${playerComponent})
+	# The generated changelog may be absent when this product has no entries.
+	install(FILES "${CMAKE_SOURCE_DIR}/doc/changelog_split/changelog_${playerProductName}.txt"
+		DESTINATION .
+		COMPONENT ${playerComponent}
+		OPTIONAL)
+endforeach()
+# Keep JUCE's wrapper, but own startup configuration before it opens devices. The definition is
+# read by the Standalone wrapper only, so it stays on the shared code whatever formats build.
+if(TARGET 88emuplayer_Standalone)
+	target_sources(88emuplayer_Standalone PRIVATE app/Emu88Standalone.cpp)
+endif()
 target_compile_definitions(88emuplayer PUBLIC JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1)
 # The CLI's --video mode renders the player's own UI, so it links the plugin's shared code (the
 # processor, the editor and the skin assets) rather than growing a second copy of the front panel.
-add_executable(88EmuCli app/Emu88Cli.cpp app/Emu88LaunchOptions.cpp app/Emu88VideoRender.cpp)
-target_link_libraries(88EmuCli PRIVATE 88emuplayer 88emuplayer_BinaryData 88lib jucePlayerLib juceRmlUi
-	juceUiLib jucePluginData juce_plugin_modules)
-target_compile_definitions(88EmuCli PRIVATE JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1)
-set_target_properties(88EmuCli PROPERTIES FOLDER "Ronaldo/88emu" RUNTIME_OUTPUT_DIRECTORY "${TUS_BIN_DIR}/plugins/$<CONFIG>")
-if(WIN32)
-	target_link_libraries(88EmuCli PRIVATE shell32)
-endif()
-if(TARGET PluginFormat_Standalone)
-	add_dependencies(PluginFormat_Standalone 88EmuCli)
-endif()
-if(APPLE OR WIN32)
-	install(TARGETS 88EmuCli RUNTIME DESTINATION . COMPONENT ${playerProductName}-Standalone)
-else()
-	install(TARGETS 88EmuCli RUNTIME DESTINATION bin COMPONENT ${playerProductName}-Standalone)
+# It is an application like the standalone and ships in its component, so it builds with it.
+if(USE_Standalone)
+	add_executable(88EmuCli app/Emu88Cli.cpp app/Emu88LaunchOptions.cpp app/Emu88VideoRender.cpp)
+	target_link_libraries(88EmuCli PRIVATE 88emuplayer 88emuplayer_BinaryData 88lib jucePlayerLib juceRmlUi
+		juceUiLib jucePluginData juce_plugin_modules)
+	target_compile_definitions(88EmuCli PRIVATE JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1)
+	set_target_properties(88EmuCli PROPERTIES FOLDER "Ronaldo/88emu" RUNTIME_OUTPUT_DIRECTORY "${TUS_BIN_DIR}/plugins/$<CONFIG>")
+	if(WIN32)
+		target_link_libraries(88EmuCli PRIVATE shell32)
+	endif()
+	if(TARGET PluginFormat_Standalone)
+		add_dependencies(PluginFormat_Standalone 88EmuCli)
+	endif()
+	if(APPLE OR WIN32)
+		install(TARGETS 88EmuCli RUNTIME DESTINATION . COMPONENT ${playerProductName}-Standalone)
+	else()
+		install(TARGETS 88EmuCli RUNTIME DESTINATION bin COMPONENT ${playerProductName}-Standalone)
+	endif()
 endif()
 if(BUILD_TESTING)
 	add_executable(88emuLaunchOptions_test tests/Emu88LaunchOptions_test.cpp app/Emu88LaunchOptions.cpp app/Emu88Playlist.cpp)

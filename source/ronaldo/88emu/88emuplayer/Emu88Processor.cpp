@@ -128,11 +128,16 @@ namespace emu88Player
 		m_outputGain.store(std::clamp(gain, kMinimumOutputGain, kMaximumOutputGain),
 		                   std::memory_order_relaxed);
 
-		// Start the bridge only on backends that provide virtual endpoints.
-		const auto portMidiEnabled = jucePlayer::PortMidiBridge::virtualPortsSupported() &&
+		// Start the bridge only on backends that provide virtual endpoints, and only when the
+		// processor runs as an application (the standalone, or the CLI, which creates it
+		// directly): a plugin gets its MIDI from the host, and every instance in a session
+		// would otherwise put its own set of system-wide ports up.
+		const auto virtualPortsWanted = jucePlayer::PortMidiBridge::virtualPortsSupported() &&
+			(wrapperType == wrapperType_Standalone || wrapperType == wrapperType_Undefined);
+		const auto portMidiEnabled = virtualPortsWanted &&
 			m_config->getBoolValue("portMidiEnabled", true);
 		m_portMidiEnabled.store(portMidiEnabled, std::memory_order_release);
-		if(jucePlayer::PortMidiBridge::virtualPortsSupported())
+		if(virtualPortsWanted)
 		{
 			m_portMidiBridge = std::make_unique<jucePlayer::PortMidiBridge>([this](synthLib::SMidiEvent _event)
 			{
@@ -527,11 +532,12 @@ namespace emu88Player
 
 	void Processor::setPortMidiEnabled(const bool _enabled)
 	{
-		if(!jucePlayer::PortMidiBridge::virtualPortsSupported())
+		// Without a bridge (no virtual endpoints on this backend, or running as a plugin)
+		// there is nothing to switch, and the application's setting is left alone.
+		if(!m_portMidiBridge)
 			return;
 		m_portMidiEnabled.store(_enabled, std::memory_order_release);
-		if(m_portMidiBridge)
-			m_portMidiBridge->setEnabled(_enabled);
+		m_portMidiBridge->setEnabled(_enabled);
 		m_config->setValue("portMidiEnabled", _enabled);
 		m_config->saveIfNeeded();
 	}
